@@ -133,7 +133,7 @@ async function updateEmailStatus(
     }
 
     const result = await db.query(updateQuery, updateParams);
-    return result.rowCount > 0;
+   return (result.rowCount || 0) > 0;
 
   } catch (error) {
     // Only log actual database errors

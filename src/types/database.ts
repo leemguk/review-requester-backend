@@ -187,17 +187,6 @@ export interface CreateTemplateRequest {
   html: string;
   isDefault?: boolean;
 }
-// ADD these to your existing types file:
-
-export enum PlatformType {
-  TRUSTPILOT = 'TRUSTPILOT',
-  GOOGLE = 'GOOGLE',
-  YELP = 'YELP',
-  FACEBOOK = 'FACEBOOK',
-  AMAZON = 'AMAZON',
-  TRIPADVISOR = 'TRIPADVISOR',
-  CUSTOM = 'CUSTOM'
-}
 
 export interface ReviewPlatform {
   id: number;

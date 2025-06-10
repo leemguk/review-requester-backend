@@ -61,7 +61,7 @@ router.post('/register',
       const token = jwt.sign(
         { id: user.id, email: user.email },
         config.jwt.secret,
-        { expiresIn: config.jwt.expiresIn }
+        { expiresIn: config.jwt.expiresIn } as any
       );
 
       logger.info(`New user registered: ${email}`);
@@ -132,7 +132,7 @@ router.post('/login',
       const token = jwt.sign(
         { id: user.id, email: user.email },
         config.jwt.secret,
-        { expiresIn: config.jwt.expiresIn }
+        { expiresIn: config.jwt.expiresIn } as any
       );
 
       logger.info(`User logged in: ${email}`);
