@@ -5,9 +5,15 @@ import { config } from '../config/environment';
 import { validateRequest } from '../middleware/validation';
 import { logger } from '../utils/logger';
 import { z } from 'zod';
+import { db } from '../lib/prisma';
 
 const router = Router();
+const ALLOWED_DOMAINS = ['ransomspares.co.uk'];
 
+function isAllowedEmail(email: string): boolean {
+  const domain = email.toLowerCase().split('@')[1];
+  return ALLOWED_DOMAINS.includes(domain);
+}
 // Validation schemas
 const registerSchema = z.object({
   body: z.object({
@@ -32,6 +38,14 @@ router.post('/register',
     try {
       const { email, password, firstName, lastName } = req.body;
 
+      // Check if email domain is allowed
+      if (!isAllowedEmail(email)) {
+        return res.status(403).json({
+          success: false,
+          error: 'Registration is currently private'
+        });
+      }
+
       // TODO: Check if user already exists in database
       // const existingUser = await db.user.findUnique({ where: { email } });
       // if (existingUser) {
@@ -45,17 +59,19 @@ router.post('/register',
       const saltRounds = 12;
       const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-      // TODO: Create user in database
-      const user = {
-        id: Date.now(), // Temporary ID
-        email: email.toLowerCase(),
-        firstName,
-        lastName,
-        password: hashedPassword,
-        isActive: true,
-        createdAt: new Date(),
-        updatedAt: new Date()
-      };
+      // Create user in database
+      const userResult = await db.query(`
+        INSERT INTO users (id, email, name, password, "createdAt", "updatedAt")
+        VALUES ($1, $2, $3, $4, NOW(), NOW())
+        RETURNING id, email, name
+      `, [
+        Date.now().toString(),
+        email.toLowerCase(),
+        `${firstName} ${lastName}`,
+        hashedPassword
+      ]);
+
+      const user = userResult.rows[0];
 
       // Generate JWT token
       const token = jwt.sign(
@@ -102,13 +118,28 @@ router.post('/login',
       //   where: { email: email.toLowerCase() } 
       // });
 
-      // Mock user for now
-      const user = {
-        id: 1,
-        email: 'charlie.gilbert@ransomspares.co.uk',
-        password: await bcrypt.hash('password123', 12), // Mock hashed password
-        firstName: 'Charlie',
-        lastName: 'Gilbert',
+      // Get user from database
+      const userResult = await db.query(
+        'SELECT id, email, password, name FROM users WHERE email = $1',
+        [email.toLowerCase()]
+      );
+
+      if (userResult.rows.length === 0) {
+        return res.status(401).json({
+          success: false,
+          error: 'Invalid email or password'
+        });
+      }
+
+      const user = userResult.rows[0];
+      const [firstName, ...lastNameParts] = (user.name || '').split(' ');
+      const lastName = lastNameParts.join(' ');
+
+      // Add the parsed names to user object
+      const fullUser = {
+        ...user,
+        firstName: firstName || '',
+        lastName: lastName || '',
         isActive: true
       };
 
@@ -120,7 +151,7 @@ router.post('/login',
       }
 
       // Verify password
-      const isValidPassword = await bcrypt.compare(password, user.password);
+      const isValidPassword = await bcrypt.compare(password, fullUser.password);
       if (!isValidPassword) {
         return res.status(401).json({
           success: false,
@@ -130,7 +161,7 @@ router.post('/login',
 
       // Generate JWT token
       const token = jwt.sign(
-        { id: user.id, email: user.email },
+        { id: fullUser.id, email: fullUser.email },
         config.jwt.secret,
         { expiresIn: config.jwt.expiresIn } as any
       );

@@ -62,7 +62,8 @@ router.post('/send',
     try {
       const { customers, templateId, campaignName }: SendEmailRequest = req.body;
       const authenticatedUser = (req as any).user;
-      const userId = authenticatedUser.id; // Extract user ID from JWT token
+      const userId = authenticatedUser.id;
+      logger.info(`Sending emails as user ID: ${userId}, type: ${typeof userId}`);
 
       // Validate customers
       const { valid: validCustomers, invalid: invalidCustomers } = 

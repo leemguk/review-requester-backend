@@ -109,7 +109,7 @@ export class EmailService {
           reviewPlatformId: reviewPlatform.id,
           customerEmail: customer.email,
           customerName: customer.name,
-          status: 'SENT',
+          status: 'SENT',  // Keep uppercase for TypeScript
           messageId: messageId,
           userId: userId,
           sendgridMessageId: messageId
@@ -223,12 +223,9 @@ export class EmailService {
     sendgridMessageId?: string;
   }): Promise<void> {
     try {
-      // Convert userId to string consistently
-      let userIdString = '1'; // Default fallback
-
-      if (logData.userId) {
-        userIdString = logData.userId.toString();
-      }
+      // Use the actual userId passed from the route
+      let userIdString = logData.userId ? logData.userId.toString() : '1';
+      console.log(`Saving email with userId: ${userIdString}`);
 
       // Ensure we have a valid user in the database
       await this.ensureUserExists(userIdString);
@@ -240,11 +237,10 @@ export class EmailService {
       // Create email log record using direct SQL
       await db.query(`
         INSERT INTO emails (
-          id, "to", subject, content, status, "sentAt", 
+          "to", subject, content, status, "sentAt", 
           "userId", "campaignId", "sendgridMessageId", "createdAt", "updatedAt"
-        ) VALUES (
-          gen_random_uuid(), $1, $2, $3, $4, $5, 
-          $6, $7, $8, NOW(), NOW()
+          ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW()
         )
       `, [
         logData.customerEmail,

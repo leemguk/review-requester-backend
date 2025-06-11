@@ -64,13 +64,27 @@ async function processSendGridEvent(event: any): Promise<'processed' | 'skipped'
     }
 
     // Check if email exists in our review app database
-    const emailResult = await db.query(`
-      SELECT id, "userId", "to", status, "createdAt"
-      FROM emails 
-      WHERE "to" = $1
-      ORDER BY "createdAt" DESC
-      LIMIT 1
-    `, [customerEmail]);
+    // Try to find by SendGrid message ID first (more accurate)
+    let emailResult;
+    if (event.sg_message_id) {
+      emailResult = await db.query(`
+        SELECT id, "userId", "to", status, "createdAt"
+        FROM emails 
+        WHERE "sendgridMessageId" = $1
+        LIMIT 1
+      `, [event.sg_message_id.split('.')[0]]); // SendGrid adds .filter after ID
+    }
+
+    // Fallback to email address if no message ID match
+    if (!emailResult || emailResult.rows.length === 0) {
+      emailResult = await db.query(`
+        SELECT id, "userId", "to", status, "createdAt"
+        FROM emails 
+        WHERE "to" = $1
+        ORDER BY "createdAt" DESC
+        LIMIT 1
+      `, [customerEmail]);
+    }
 
     const emailRecord = emailResult.rows[0];
 
@@ -107,24 +121,24 @@ async function updateEmailStatus(
     switch (eventType) {
       case 'delivered':
         updateQuery = `UPDATE emails SET status = $1, "deliveredAt" = $3, "updatedAt" = NOW() WHERE id = $2`;
-        updateParams = ['delivered', emailId, timestamp];
+        updateParams = ['DELIVERED', emailId, timestamp];
         break;
       case 'open':
         updateQuery = `UPDATE emails SET status = $1, "openedAt" = $3, "openCount" = COALESCE("openCount", 0) + 1, "updatedAt" = NOW() WHERE id = $2`;
-        updateParams = ['opened', emailId, timestamp];
+        updateParams = ['OPENED', emailId, timestamp];
         break;
       case 'click':
         updateQuery = `UPDATE emails SET status = $1, "clickedAt" = $3, "clickCount" = COALESCE("clickCount", 0) + 1, "updatedAt" = NOW() WHERE id = $2`;
-        updateParams = ['clicked', emailId, timestamp];
+        updateParams = ['CLICKED', emailId, timestamp];
         break;
       case 'bounce':
       case 'dropped':
         updateQuery = `UPDATE emails SET status = $1, "bouncedAt" = $3, "updatedAt" = NOW() WHERE id = $2`;
-        updateParams = ['bounced', emailId, timestamp];
+        updateParams = ['BOUNCED', emailId, timestamp];
         break;
       case 'spamreport':
         updateQuery = `UPDATE emails SET status = $1, "spamAt" = $3, "updatedAt" = NOW() WHERE id = $2`;
-        updateParams = ['spam', emailId, timestamp];
+        updateParams = ['SPAM', emailId, timestamp];
         break;
       case 'processed':
         return true; // Acknowledge silently

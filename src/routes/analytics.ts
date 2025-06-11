@@ -67,22 +67,30 @@ router.get('/stats',
 
       // Calculate stats
       const emailsSent = totalEmails;
-      const delivered = statusBreakdown['sent'] || 0;
-      const opened = statusBreakdown['opened'] || 0;
-      const clicked = statusBreakdown['clicked'] || 0;
-      const bounced = statusBreakdown['bounced'] || 0;
-      const spam = statusBreakdown['spam'] || 0;
-      const failed = statusBreakdown['failed'] || 0;
 
-      // Calculate rates (avoid division by zero)
-      const deliveryRate = emailsSent > 0 ? Math.round((delivered / emailsSent) * 100) : 0;
+      // Count both uppercase and lowercase statuses
+      const delivered = (statusBreakdown['delivered'] || 0) + (statusBreakdown['DELIVERED'] || 0);
+      const opened = (statusBreakdown['opened'] || 0) + (statusBreakdown['OPENED'] || 0) + 
+                     (statusBreakdown['clicked'] || 0) + (statusBreakdown['CLICKED'] || 0);
+      const clicked = (statusBreakdown['clicked'] || 0) + (statusBreakdown['CLICKED'] || 0);
+      const bounced = (statusBreakdown['bounced'] || 0) + (statusBreakdown['BOUNCED'] || 0);
+      const spam = (statusBreakdown['spam'] || 0) + (statusBreakdown['SPAM'] || 0);
+      const failed = (statusBreakdown['failed'] || 0) + (statusBreakdown['FAILED'] || 0);
+
+      // For emails that went straight to clicked/opened without explicit delivered status
+      const implicitDelivered = delivered + opened;
+
+      // Only ONE deliveryRate declaration:
+      const deliveryRate = emailsSent > 0 ? Math.round((implicitDelivered / emailsSent) * 100) : 0;
+
+      // Calculate other rates (no more deliveryRate here!)
       const openRate = delivered > 0 ? Math.round((opened / delivered) * 100) : 0;
       const clickRate = opened > 0 ? Math.round((clicked / opened) * 100) : 0;
       const bounceRate = emailsSent > 0 ? Math.round((bounced / emailsSent) * 100) : 0;
       const spamRate = emailsSent > 0 ? Math.round((spam / emailsSent) * 100) : 0;
 
       // Monthly limits
-      const monthlyLimit = 1000;
+      const monthlyLimit = 100000;
       const usagePercentage = monthlyLimit > 0 ? Math.round((monthlyEmails / monthlyLimit) * 100) : 0;
 
       const analyticsData = {
@@ -110,7 +118,7 @@ router.get('/stats',
         failed,
         emailStats: {
           sent: emailsSent,
-          delivered,
+          delivered: implicitDelivered,  // Use the calculated value that includes opened/clicked
           opened,
           clicked,
           bounced,

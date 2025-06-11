@@ -1,44 +1,70 @@
-// src/lib/prisma.ts - Now using direct PostgreSQL connection
+// src/lib/prisma.ts - Optimized for Neon with connection pooling
 import { Pool, PoolClient } from 'pg'
 
+// Use connection pooling for better performance
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-})
+  max: 10, // max number of connections
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
+  // Neon-specific optimizations
+  ssl: {
+    rejectUnauthorized: false
+  }
+});
+
+// Log pool errors
+pool.on('error', (err) => {
+  console.error('Unexpected pool error:', err);
+});
 
 export const db = {
   async query(text: string, params?: any[]) {
-    const client = await pool.connect()
+    const start = Date.now();
     try {
-      const result = await client.query(text, params)
-      return result
-    } finally {
-      client.release()
+      const result = await pool.query(text, params);
+      const duration = Date.now() - start;
+
+      // Log slow queries for debugging
+      if (duration > 1000) {
+        console.log('Slow query:', { 
+          query: text.substring(0, 50) + '...', 
+          duration: duration + 'ms' 
+        });
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Database query error:', error);
+      throw error;
     }
   },
 
   async getClient(): Promise<PoolClient> {
-    return await pool.connect()
+    return await pool.connect();
   },
 
   async end() {
-    await pool.end()
+    await pool.end();
   }
 }
 
-// Test connection
+// Test connection with timing
 export async function testConnection() {
   try {
-    const result = await db.query('SELECT NOW() as current_time')
-    console.log('✅ Database connected successfully:', result.rows[0])
-    return true
+    const start = Date.now();
+    const result = await db.query('SELECT NOW() as current_time');
+    const duration = Date.now() - start;
+    console.log(`✅ Database connected successfully in ${duration}ms:`, result.rows[0]);
+    return true;
   } catch (error) {
-    console.error('❌ Database connection failed:', error)
-    return false
+    console.error('❌ Database connection failed:', error);
+    return false;
   }
 }
 
-// For backward compatibility, export as prisma
-export const prisma = db
+// Run connection test on startup
+testConnection();
 
-export default db
+export const prisma = db;
+export default db;
