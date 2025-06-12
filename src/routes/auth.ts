@@ -143,13 +143,6 @@ router.post('/login',
         isActive: true
       };
 
-      if (!user || !user.isActive) {
-        return res.status(401).json({
-          success: false,
-          error: 'Invalid email or password'
-        });
-      }
-
       // Verify password
       const isValidPassword = await bcrypt.compare(password, fullUser.password);
       if (!isValidPassword) {

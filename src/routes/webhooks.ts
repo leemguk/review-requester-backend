@@ -118,28 +118,28 @@ async function updateEmailStatus(
     let updateQuery = '';
     let updateParams: any[] = [];
 
-    switch (eventType) {
-      case 'delivered':
-        updateQuery = `UPDATE emails SET status = $1, "deliveredAt" = $3, "updatedAt" = NOW() WHERE id = $2`;
-        updateParams = ['DELIVERED', emailId, timestamp];
-        break;
-      case 'open':
-        updateQuery = `UPDATE emails SET status = $1, "openedAt" = $3, "openCount" = COALESCE("openCount", 0) + 1, "updatedAt" = NOW() WHERE id = $2`;
-        updateParams = ['OPENED', emailId, timestamp];
-        break;
-      case 'click':
-        updateQuery = `UPDATE emails SET status = $1, "clickedAt" = $3, "clickCount" = COALESCE("clickCount", 0) + 1, "updatedAt" = NOW() WHERE id = $2`;
-        updateParams = ['CLICKED', emailId, timestamp];
-        break;
-      case 'bounce':
-      case 'dropped':
-        updateQuery = `UPDATE emails SET status = $1, "bouncedAt" = $3, "updatedAt" = NOW() WHERE id = $2`;
-        updateParams = ['BOUNCED', emailId, timestamp];
-        break;
-      case 'spamreport':
-        updateQuery = `UPDATE emails SET status = $1, "spamAt" = $3, "updatedAt" = NOW() WHERE id = $2`;
-        updateParams = ['SPAM', emailId, timestamp];
-        break;
+        switch (eventType) {
+          case 'delivered':
+            updateQuery = `UPDATE emails SET status = $1, "deliveredAt" = $3, "updatedAt" = NOW() WHERE id = $2`;
+            updateParams = ['delivered', emailId, timestamp];  // <-- Change 'DELIVERED' to 'delivered'
+            break;
+          case 'open':
+            updateQuery = `UPDATE emails SET status = $1, "openedAt" = $3, "openCount" = COALESCE("openCount", 0) + 1, "updatedAt" = NOW() WHERE id = $2`;
+            updateParams = ['opened', emailId, timestamp];  // <-- Change 'OPENED' to 'opened'
+            break;
+          case 'click':
+            updateQuery = `UPDATE emails SET status = $1, "clickedAt" = $3, "clickCount" = COALESCE("clickCount", 0) + 1, "updatedAt" = NOW() WHERE id = $2`;
+            updateParams = ['clicked', emailId, timestamp];  // <-- Change 'CLICKED' to 'clicked'
+            break;
+          case 'bounce':
+          case 'dropped':
+            updateQuery = `UPDATE emails SET status = $1, "bouncedAt" = $3, "updatedAt" = NOW() WHERE id = $2`;
+            updateParams = ['bounced', emailId, timestamp];  // <-- Change 'BOUNCED' to 'bounced'
+            break;
+          case 'spamreport':
+            updateQuery = `UPDATE emails SET status = $1, "spamAt" = $3, "updatedAt" = NOW() WHERE id = $2`;
+            updateParams = ['spam', emailId, timestamp];  // <-- Change 'SPAM' to 'spam'
+            break;
       case 'processed':
         return true; // Acknowledge silently
       default:
