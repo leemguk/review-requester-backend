@@ -89,7 +89,7 @@ router.post('/send',
       // For now, we'll use mock data but with the user's actual email settings
       const company = {
         id: 1,
-        name: 'Ransom Spares.co.uk Ltd',
+        name: 'Ransom Spares',
         trustpilotUrl: 'https://uk.trustpilot.com/evaluate/ransomspares.co.uk',
         fromEmail: userEmailSettings.fromEmail,
         fromName: userEmailSettings.displayName // Use the user's display name from database
@@ -116,11 +116,11 @@ router.post('/send',
 
           <p>Hello {{customerName}},</p>
 
-          <p>I hope this email finds you well. I'm reaching out to thank you for choosing us for your recent order, it really means a lot.</p>
+          <p>Thank you for your recent order from Ransom Spares. We hope everything arrived safely and meets your expectations.</p>
 
-          <p>As a family-run business based in Somerset, we take great pride in providing fast, reliable, and personalised service to each of our customers. We believe in what we do and are always striving to improve and grow.</p>
+          <p>We'd really value your feedback about your experience. It helps us improve our service and helps other customers too.</p>
 
-          <p>To help us spread the word and grow our customer base, we'd be incredibly grateful if you could leave us a review on Trustpilot. Your feedback will not only help us grow, but also allow others to see the level of service we provide.</p>
+          <p>Would you mind taking a moment to share your thoughts on Trustpilot?</p>
 
           <p>To leave your feedback, just <a href="{{trustpilotLink}}" style="color: #0066cc;">review us on Trustpilot</a>.</p>
 

@@ -71,13 +71,22 @@ export class EmailService {
           to: customer.email,
           from: {
             email: company.fromEmail,
-            name: company.fromName // Use the display name from user settings
+            name: company.fromName
           },
           subject: personalizedTemplate.subject,
           html: personalizedTemplate.html,
+          asm: {
+            groupId: 27196,
+            groupsToDisplay: [27196]
+          },
           trackingSettings: {
             clickTracking: { enable: true, enableText: false },
-            openTracking: { enable: true }
+            openTracking: { enable: true },
+            subscriptionTracking: {
+              enable: true,
+              text: 'Unsubscribe from review requests',
+              html: '<p style="text-align: center; font-size: 11px; color: #666; margin-top: 20px;">Don\'t want to receive review request emails? <a href="<%asm_group_unsubscribe_raw_url%>" style="color: #666; text-decoration: underline;">Unsubscribe here</a></p>'
+            }
           },
           // Categories and custom args for webhook filtering
           categories: ['review_request', reviewPlatform.platform.toLowerCase()],
