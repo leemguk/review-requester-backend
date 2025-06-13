@@ -1,4 +1,5 @@
-// src/routes/upload.ts - NEW FILE
+// COMPLETE src/routes/upload.ts file - Replace your entire file with this
+
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
@@ -37,7 +38,7 @@ const upload = multer({
 interface Customer {
   name: string;
   email: string;
-  originalRow: number;
+  originalRow?: number;
   originalSheet?: string;
 }
 
@@ -71,102 +72,127 @@ interface ProcessedData {
     skipReasons: Record<string, number>;
   };
 }
-const isWithin36BusinessHours = (orderDateStr: string, despatchDateStr: string): boolean => {
-  if (!orderDateStr || !despatchDateStr || orderDateStr.trim() === '' || despatchDateStr.trim() === '') return false;
+
+// FIXED: Same-day despatch validation with proper typing
+const isSameDayDespatch = (orderDateStr: string | Date, despatchDateStr: string | Date): boolean => {
+  if (!orderDateStr || !despatchDateStr) {
+    return false;
+  }
 
   try {
-    // Parse both dates
-    const parseDate = (dateStr: string): Date => {
-      if (dateStr.includes(' ')) {
-        // Format with time
-        const [datePart, timePart] = dateStr.split(' ');
+    let orderDate: Date;
+    let despatchDate: Date;
 
-        if (datePart.includes('/')) {
-          // DD/MM/YYYY HH:MM:SS format
-          const [day, month, year] = datePart.split('/');
-          const [hours, minutes, seconds] = (timePart || '00:00:00').split(':');
+    // Handle different input types
+    if (orderDateStr instanceof Date) {
+      orderDate = orderDateStr;
+    } else {
+      // Convert string to Date
+      orderDate = new Date(orderDateStr);
+    }
 
-          return new Date(
-            parseInt(year), 
-            parseInt(month) - 1, 
-            parseInt(day),
-            parseInt(hours || '0'),
-            parseInt(minutes || '0'),
-            parseInt(seconds || '0')
-          );
-        } else {
-          // YYYY-MM-DD HH:MM:SS format
-          return new Date(dateStr);
-        }
-      } else {
-        // Just date without time
-        if (dateStr.includes('/')) {
-          // DD/MM/YYYY format
-          const [day, month, year] = dateStr.split('/');
-          return new Date(parseInt(year), parseInt(month) - 1, parseInt(day), 12, 0, 0);
-        } else {
-          // YYYY-MM-DD format
-          return new Date(dateStr + 'T12:00:00');
-        }
-      }
-    };
+    if (despatchDateStr instanceof Date) {
+      despatchDate = despatchDateStr;
+    } else {
+      // Convert string to Date
+      despatchDate = new Date(despatchDateStr);
+    }
 
-    const orderDate = parseDate(orderDateStr);
-    const despatchDate = parseDate(despatchDateStr);
-
-    // Check if dates are valid
     if (isNaN(orderDate.getTime()) || isNaN(despatchDate.getTime())) {
       console.error('Invalid dates:', { orderDateStr, despatchDateStr });
       return false;
     }
 
-    // Calculate business hours between ORDER and DESPATCH
-    let businessHours = 0;
-    let currentDate = new Date(orderDate);
+    // Extract just the date components (ignore time for day comparison)
+    const orderDay = new Date(orderDate.getFullYear(), orderDate.getMonth(), orderDate.getDate());
+    const despatchDay = new Date(despatchDate.getFullYear(), despatchDate.getMonth(), despatchDate.getDate());
 
-    while (currentDate < despatchDate) {
-      const dayOfWeek = currentDate.getDay(); // 0 = Sunday, 6 = Saturday
+    // Get the order hour for 3pm cutoff logic
+    const orderHour = orderDate.getHours();
 
-      // Skip weekends (Saturday = 6, Sunday = 0)
-      if (dayOfWeek !== 0 && dayOfWeek !== 6) {
-        const endOfDay = new Date(currentDate);
-        endOfDay.setHours(23, 59, 59, 999);
+    // Rule: Orders before 3pm (15:00) must despatch same day
+    if (orderHour < 15) {
+      return orderDay.getTime() === despatchDay.getTime();
+    } 
+    // Rule: Orders at/after 3pm can despatch same day OR next working day
+    else {
+      // Check if it's same day despatch
+      const sameDayDespatch = orderDay.getTime() === despatchDay.getTime();
 
-        const endTime = endOfDay < despatchDate ? endOfDay : despatchDate;
-        const hoursThisDay = (endTime.getTime() - currentDate.getTime()) / (1000 * 60 * 60);
+      // Calculate next working day from order date
+      const nextWorkingDay = new Date(orderDay);
+      nextWorkingDay.setDate(nextWorkingDay.getDate() + 1);
 
-        businessHours += hoursThisDay;
+      // Skip weekends for next day despatch
+      while (nextWorkingDay.getDay() === 0 || nextWorkingDay.getDay() === 6) {
+        nextWorkingDay.setDate(nextWorkingDay.getDate() + 1);
       }
 
-      // Move to next day
-      currentDate.setDate(currentDate.getDate() + 1);
-      currentDate.setHours(0, 0, 0, 0);
+      const nextDayDespatch = nextWorkingDay.getTime() === despatchDay.getTime();
+
+      // Allow same day OR next working day
+      return sameDayDespatch || nextDayDespatch;
     }
 
-    return businessHours <= 36;
-
   } catch (error) {
-    console.error('Error parsing dates:', { orderDateStr, despatchDateStr }, error);
+    console.error('Error in same-day despatch validation:', error);
     return false;
   }
 };
 
-const formatCustomerName = (firstName: string, lastName: string): string => {
-  const titleWords = ['MR', 'MRS', 'MISS', 'MS', 'DR', 'SIR', 'LADY'];
-  const firstNameUpper = firstName.toUpperCase();
+// NEW: Proper name capitalization functions
+const capitalizeWord = (word: string): string => {
+  if (!word || word.length === 0) return word;
 
-  // Check if firstName is a title or single letter - these need special handling
-  const isTitle = titleWords.includes(firstNameUpper);
-  const isSingleLetter = firstName.length === 1;
+  const specialPrefixes = ['mc', 'mac', 'o\''];
+  const lowerWord = word.toLowerCase();
+
+  for (const prefix of specialPrefixes) {
+    if (lowerWord.startsWith(prefix)) {
+      if (prefix === 'o\'') {
+        return 'O\'' + word.slice(2, 3).toUpperCase() + word.slice(3).toLowerCase();
+      } else {
+        return prefix.charAt(0).toUpperCase() + prefix.slice(1) + 
+               word.slice(prefix.length, prefix.length + 1).toUpperCase() + 
+               word.slice(prefix.length + 1).toLowerCase();
+      }
+    }
+  }
+
+  if (word.includes('-')) {
+    return word.split('-')
+      .map(part => capitalizeWord(part))
+      .join('-');
+  }
+
+  return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+};
+
+const capitalizeName = (name: string): string => {
+  if (!name || name.trim() === '') return name;
+
+  return name.trim()
+    .split(/\s+/)
+    .map(word => capitalizeWord(word))
+    .join(' ');
+};
+
+// UPDATED: Format customer names with proper capitalization
+const formatCustomerName = (firstName: string, lastName: string): string => {
+  const capitalizedFirstName = capitalizeName(firstName);
+  const capitalizedLastName = capitalizeName(lastName);
+
+  const titleWords = ['Mr', 'Mrs', 'Miss', 'Ms', 'Dr', 'Sir', 'Lady'];
+
+  const isTitle = titleWords.some(title => 
+    capitalizedFirstName.toLowerCase() === title.toLowerCase()
+  );
+  const isSingleLetter = capitalizedFirstName.length === 1;
 
   if (isTitle || isSingleLetter) {
-    // Smart handling: Use both first name (title/initial) and last name
-    // Examples: "Hello MR Smith", "Hello K Pudney"
-    return `${firstName} ${lastName}`.trim();
+    return `${capitalizedFirstName} ${capitalizedLastName}`.trim();
   } else {
-    // Default: Use just the first name for personal feel
-    // Examples: "Hello John", "Hello Sarah", "Hello Michael"
-    return firstName;
+    return capitalizedFirstName;
   }
 };
 
@@ -238,11 +264,9 @@ const processOrderData = (
   const processedOrders = new Set<string>();
   const emailOrderCombos = new Map<string, Set<string>>();
 
-  // Skip header row (index 0)
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
 
-    // Skip rows that don't have enough columns
     if (row.length <= Math.max(...Object.values(columnMappings))) continue;
 
     const firstName = (row[columnMappings.firstName] || '').toString().trim();
@@ -284,9 +308,9 @@ const processOrderData = (
       continue;
     }
 
-    // Business Rule 4: Skip if despatch date is older than 36 business hours
-      if (!isWithin36BusinessHours(orderDate, despatchDate)) {
-      customer.skipReason = 'Despatch date older than 36 business hours';
+    // Business Rule 4: Skip if not same-day despatch
+    if (!isSameDayDespatch(orderDate, despatchDate)) {
+      customer.skipReason = 'Not same-day despatch (orders before 3pm must despatch same day, orders after 3pm can despatch next working day)';
       skipped.push(customer);
       continue;
     }
@@ -312,10 +336,9 @@ const processOrderData = (
       continue;
     }
 
-    // Business Rule 7: Smart name formatting
+    // Business Rule 7: UPDATED - Smart name formatting with capitalization
     customer.displayName = formatCustomerName(firstName, lastName);
 
-    // If we get here, the customer should be included
     processedOrders.add(orderNumber);
     emailOrders.add(orderKey);
     toSend.push(customer);
@@ -336,7 +359,6 @@ const parseCSV = (text: string, delimiter: string = ','): string[][] => {
   for (let line of lines) {
     if (line.trim() === '') continue;
 
-    // Handle quoted fields
     const row: string[] = [];
     let current = '';
     let inQuotes = false;
@@ -356,7 +378,6 @@ const parseCSV = (text: string, delimiter: string = ','): string[][] => {
       }
     }
     row.push(current.trim());
-
     result.push(row);
   }
 
@@ -383,14 +404,12 @@ router.post('/process',
 
       logger.info(`Processing file: ${file.originalname}, size: ${file.size}, type: ${file.mimetype}`);
 
-      // Process based on file type
       if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls')) {
-        // Excel file processing
         const workbook = XLSX.read(file.buffer, {
           type: 'buffer',
           cellText: false,
           cellDates: true,
-          raw: false
+          raw: true  // Keep raw values to preserve time data
         });
 
         sheets = workbook.SheetNames;
@@ -399,13 +418,25 @@ router.post('/process',
           const worksheet = workbook.Sheets[sheetName];
           const jsonData = XLSX.utils.sheet_to_json(worksheet, {
             header: 1,
-            raw: false,
-            dateNF: 'yyyy-mm-dd',
+            raw: true,  // Keep raw values
+            dateNF: 'dd/mm/yyyy hh:mm:ss',  // Preserve time format
             defval: ''
           }) as string[][];
 
-          // Filter out completely empty rows
-          const filteredData = jsonData.filter(row => 
+          // Convert Excel date numbers to proper date strings
+          const convertedData = jsonData.map((row, rowIndex) => {
+            return row.map((cell, colIndex) => {
+              if (typeof cell === 'number' && cell > 25000 && cell < 100000) {
+                // This looks like an Excel date serial number
+                const excelDate = XLSX.SSF.format('dd/mm/yyyy hh:mm:ss', cell);
+                console.log(`Converting Excel date: ${cell} → ${excelDate}`);
+                return excelDate;
+              }
+              return cell;
+            });
+          });
+
+          const filteredData = convertedData.filter(row => 
             row.some(cell => cell && cell.toString().trim() !== '')
           );
 
@@ -413,14 +444,12 @@ router.post('/process',
         }
 
       } else if (fileName.endsWith('.csv')) {
-        // CSV file processing
         const text = file.buffer.toString('utf-8');
         const csvData = parseCSV(text);
         allSheetData['Sheet1'] = csvData;
         sheets = ['Sheet1'];
 
       } else if (fileName.endsWith('.tsv')) {
-        // TSV file processing
         const text = file.buffer.toString('utf-8');
         const tsvData = parseCSV(text, '\t');
         allSheetData['Sheet1'] = tsvData;
@@ -433,7 +462,6 @@ router.post('/process',
         });
       }
 
-      // Process first sheet by default
       const firstSheet = sheets[0];
       const firstSheetData = allSheetData[firstSheet];
 
@@ -444,18 +472,15 @@ router.post('/process',
         });
       }
 
-      // Apply business logic processing
       const columnMappings = detectOrderColumns(firstSheetData[0]);
       const { toSend, skipped } = processOrderData(firstSheetData, columnMappings, firstSheet);
 
-      // Generate summary statistics
       const skipReasons: Record<string, number> = {};
       skipped.forEach(customer => {
         const reason = customer.skipReason || 'Unknown';
         skipReasons[reason] = (skipReasons[reason] || 0) + 1;
       });
 
-      // Convert to existing Customer format for compatibility
       const validCustomers: Customer[] = toSend.map(customer => ({
         name: customer.displayName || customer.firstName,
         email: customer.email,
@@ -481,7 +506,7 @@ router.post('/process',
         }
       };
 
-      logger.info(`Order file processed: ${toSend.length} customers to send, ${skipped.length} skipped`);
+      logger.info(`File processed with name capitalization: ${toSend.length} customers to send, ${skipped.length} skipped`);
 
       res.json({
         success: true,

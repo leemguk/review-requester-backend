@@ -1611,7 +1611,6 @@ const sendEmailSchema = z.object({
     customers: z.array(z.object({
       name: z.string().min(1, 'Name is required'),
       email: z.string().email('Valid email is required'),
-      orderNumber: z.string().optional(), // Add this line
       customFields: z.record(z.string()).optional()
     })).min(1, 'At least one customer is required'),
     templateId: z.number().int().positive('Valid template ID is required'),
@@ -1662,10 +1661,8 @@ router.post('/send',
       logger.info(`Sending emails as user ID: ${userId}, type: ${typeof userId}`);
 
       // Validate customers
-      const customersWithOrders = validCustomers.map(customer => ({
-        ...customer,
-        orderNumber: customers.find(c => c.email === customer.email)?.orderNumber
-      }));
+      const { valid: validCustomers, invalid: invalidCustomers } = 
+        EmailService.validateCustomers(customers);
 
       if (validCustomers.length === 0) {
         return res.status(400).json({
@@ -1928,17 +1925,17 @@ router.get('/history',
 );
 
 export default router;
+
 ```
 
 ## src/routes/upload.ts
 ```typescript
-// src/routes/upload.ts - FIXED VERSION
+// src/routes/upload.ts - NEW FILE
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
 import { authenticateToken } from '../middleware/auth';
 import { logger } from '../utils/logger';
-import { db } from '../lib/prisma';
 
 const router = Router();
 
@@ -2006,7 +2003,6 @@ interface ProcessedData {
     skipReasons: Record<string, number>;
   };
 }
-
 const isWithin36BusinessHours = (orderDateStr: string, despatchDateStr: string): boolean => {
   if (!orderDateStr || !despatchDateStr || orderDateStr.trim() === '' || despatchDateStr.trim() === '') return false;
 
@@ -2156,7 +2152,7 @@ const detectOrderColumns = (headers: string[]): {
   };
 };
 
-const processOrderData = async (  // Make it async
+const processOrderData = (
   data: string[][], 
   columnMappings: {
     firstName: number;
@@ -2166,32 +2162,13 @@ const processOrderData = async (  // Make it async
     orderDate: number;
     despatchDate: number;
   },
-  sheetName?: string,
-  userId?: string  // Add userId parameter
-): Promise<{ toSend: OrderCustomer[]; skipped: OrderCustomer[] }> => {
+  sheetName?: string
+): { toSend: OrderCustomer[]; skipped: OrderCustomer[] } => {
 
   const toSend: OrderCustomer[] = [];
   const skipped: OrderCustomer[] = [];
   const processedOrders = new Set<string>();
   const emailOrderCombos = new Map<string, Set<string>>();
-
-  // NEW: Check existing orders in database at the start
-  let existingOrders = new Set<string>();
-  if (userId) {
-    try {
-      const existingOrdersResult = await db.query(`
-        SELECT DISTINCT "orderNumber" 
-        FROM emails 
-        WHERE "userId" = $1 
-        AND "orderNumber" IS NOT NULL
-      `, [userId]);
-
-      existingOrders = new Set(existingOrdersResult.rows.map(row => row.orderNumber));
-      console.log(`Found ${existingOrders.size} existing orders in database`);
-    } catch (error) {
-      console.error('Error checking existing orders:', error);
-    }
-  }
 
   // Skip header row (index 0)
   for (let i = 1; i < data.length; i++) {
@@ -2225,13 +2202,6 @@ const processOrderData = async (  // Make it async
       continue;
     }
 
-    // NEW Business Rule: Skip if order already sent email
-    if (existingOrders.has(orderNumber)) {
-      customer.skipReason = 'Email already sent for this order';
-      skipped.push(customer);
-      continue;
-    }
-
     // Business Rule 2: Skip if no email or invalid email
     if (!email || !validateEmail(email)) {
       customer.skipReason = 'Invalid or missing email';
@@ -2247,7 +2217,7 @@ const processOrderData = async (  // Make it async
     }
 
     // Business Rule 4: Skip if despatch date is older than 36 business hours
-    if (!isWithin36BusinessHours(orderDate, despatchDate)) {
+      if (!isWithin36BusinessHours(orderDate, despatchDate)) {
       customer.skipReason = 'Despatch date older than 36 business hours';
       skipped.push(customer);
       continue;
@@ -2331,7 +2301,6 @@ router.post('/process',
   upload.single('file'),
   async (req: Request, res: Response) => {
     try {
-      const userId = (req as any).user.id;
       if (!req.file) {
         return res.status(400).json({
           success: false,
@@ -2409,12 +2378,7 @@ router.post('/process',
 
       // Apply business logic processing
       const columnMappings = detectOrderColumns(firstSheetData[0]);
-      const { toSend, skipped } = await processOrderData(
-        firstSheetData, 
-        columnMappings, 
-        firstSheet,
-        userId
-      ); // FIXED: Added closing parenthesis here
+      const { toSend, skipped } = processOrderData(firstSheetData, columnMappings, firstSheet);
 
       // Generate summary statistics
       const skipReasons: Record<string, number> = {};
@@ -2468,6 +2432,7 @@ router.post('/process',
 );
 
 export default router;
+
 ```
 
 ## src/services/emailService.ts
@@ -2483,7 +2448,6 @@ sgMail.setApiKey(config.sendgrid.apiKey);
 export interface Customer {
   name: string;
   email: string;
-  orderNumber?: string; // Add this line
   customFields?: Record<string, string>;
 }
 
@@ -2584,8 +2548,7 @@ export class EmailService {
           reviewPlatformId: reviewPlatform.id,
           customerEmail: customer.email,
           customerName: customer.name,
-          orderNumber: customer.orderNumber, // Add this line
-          status: 'SENT',
+          status: 'SENT',  // Keep uppercase for TypeScript
           messageId: messageId,
           userId: userId,
           sendgridMessageId: messageId
@@ -2692,7 +2655,6 @@ export class EmailService {
     reviewPlatformId: number;
     customerEmail: string;
     customerName: string;
-    orderNumber?: string; // Add this line
     status: 'SENT' | 'FAILED' | 'DELIVERED' | 'OPENED' | 'CLICKED' | 'BOUNCED' | 'SPAM';
     messageId?: string;
     error?: string;
@@ -2702,7 +2664,7 @@ export class EmailService {
     try {
       // Use the actual userId passed from the route
       let userIdString = logData.userId ? logData.userId.toString() : '1';
-      console.log(`Saving email with userId: ${userIdString} and orderNumber: ${logData.orderNumber}`);
+      console.log(`Saving email with userId: ${userIdString}`);
 
       // Ensure we have a valid user in the database
       await this.ensureUserExists(userIdString);
@@ -2711,13 +2673,13 @@ export class EmailService {
       const subjectLine = `Review Request for ${logData.customerName}`;
       const contentDescription = `${logData.status} - Email ${logData.status.toLowerCase()} to ${logData.customerName} (${logData.customerEmail})`;
 
-      // Create email log record using direct SQL - UPDATED WITH orderNumber
+      // Create email log record using direct SQL
       await db.query(`
         INSERT INTO emails (
           "to", subject, content, status, "sentAt", 
-          "userId", "campaignId", "sendgridMessageId", "orderNumber", "createdAt", "updatedAt"
-        ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW()
+          "userId", "campaignId", "sendgridMessageId", "createdAt", "updatedAt"
+          ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW()
         )
       `, [
         logData.customerEmail,
@@ -2727,8 +2689,7 @@ export class EmailService {
         logData.status === 'SENT' ? new Date() : null,
         userIdString,
         null, // campaign ID - will be null for now
-        logData.sendgridMessageId || logData.messageId,
-        logData.orderNumber || null // Add order number here
+        logData.sendgridMessageId || logData.messageId
       ]);
 
     } catch (error) {
@@ -2851,6 +2812,8 @@ export class EmailService {
     }
   }
 }
+
+
 ```
 
 ## src/types/database.ts
@@ -3742,7 +3705,6 @@ const sendEmailSchema = zod_1.z.object({
         customers: zod_1.z.array(zod_1.z.object({
             name: zod_1.z.string().min(1, 'Name is required'),
             email: zod_1.z.string().email('Valid email is required'),
-            orderNumber: zod_1.z.string().optional(), // Add this line
             customFields: zod_1.z.record(zod_1.z.string()).optional()
         })).min(1, 'At least one customer is required'),
         templateId: zod_1.z.number().int().positive('Valid template ID is required'),
@@ -3786,10 +3748,7 @@ router.post('/send', auth_1.authenticateToken, (0, validation_1.validateRequest)
         const userId = authenticatedUser.id;
         logger_1.logger.info(`Sending emails as user ID: ${userId}, type: ${typeof userId}`);
         // Validate customers
-        const customersWithOrders = validCustomers.map(customer => ({
-            ...customer,
-            orderNumber: customers.find(c => c.email === customer.email)?.orderNumber
-        }));
+        const { valid: validCustomers, invalid: invalidCustomers } = emailService_1.EmailService.validateCustomers(customers);
         if (validCustomers.length === 0) {
             return res.status(400).json({
                 success: false,
@@ -4273,13 +4232,12 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-// src/routes/upload.ts - FIXED VERSION
+// src/routes/upload.ts - NEW FILE
 const express_1 = require("express");
 const multer_1 = __importDefault(require("multer"));
 const XLSX = __importStar(require("xlsx"));
 const auth_1 = require("../middleware/auth");
 const logger_1 = require("../utils/logger");
-const prisma_1 = require("../lib/prisma");
 const router = (0, express_1.Router)();
 // Configure multer for file uploads
 const storage = multer_1.default.memoryStorage();
@@ -4411,30 +4369,11 @@ const detectOrderColumns = (headers) => {
         despatchDate: despatchDateIndex >= 0 ? despatchDateIndex : 5
     };
 };
-const processOrderData = async (// Make it async
-data, columnMappings, sheetName, userId // Add userId parameter
-) => {
+const processOrderData = (data, columnMappings, sheetName) => {
     const toSend = [];
     const skipped = [];
     const processedOrders = new Set();
     const emailOrderCombos = new Map();
-    // NEW: Check existing orders in database at the start
-    let existingOrders = new Set();
-    if (userId) {
-        try {
-            const existingOrdersResult = await prisma_1.db.query(`
-        SELECT DISTINCT "orderNumber" 
-        FROM emails 
-        WHERE "userId" = $1 
-        AND "orderNumber" IS NOT NULL
-      `, [userId]);
-            existingOrders = new Set(existingOrdersResult.rows.map(row => row.orderNumber));
-            console.log(`Found ${existingOrders.size} existing orders in database`);
-        }
-        catch (error) {
-            console.error('Error checking existing orders:', error);
-        }
-    }
     // Skip header row (index 0)
     for (let i = 1; i < data.length; i++) {
         const row = data[i];
@@ -4460,12 +4399,6 @@ data, columnMappings, sheetName, userId // Add userId parameter
         // Business Rule 1: Skip if no order number
         if (!orderNumber) {
             customer.skipReason = 'No order number';
-            skipped.push(customer);
-            continue;
-        }
-        // NEW Business Rule: Skip if order already sent email
-        if (existingOrders.has(orderNumber)) {
-            customer.skipReason = 'Email already sent for this order';
             skipped.push(customer);
             continue;
         }
@@ -4551,7 +4484,6 @@ const parseCSV = (text, delimiter = ',') => {
 // POST /api/upload/process - Process uploaded file
 router.post('/process', auth_1.authenticateToken, upload.single('file'), async (req, res) => {
     try {
-        const userId = req.user.id;
         if (!req.file) {
             return res.status(400).json({
                 success: false,
@@ -4617,7 +4549,7 @@ router.post('/process', auth_1.authenticateToken, upload.single('file'), async (
         }
         // Apply business logic processing
         const columnMappings = detectOrderColumns(firstSheetData[0]);
-        const { toSend, skipped } = await processOrderData(firstSheetData, columnMappings, firstSheet, userId); // FIXED: Added closing parenthesis here
+        const { toSend, skipped } = processOrderData(firstSheetData, columnMappings, firstSheet);
         // Generate summary statistics
         const skipReasons = {};
         skipped.forEach(customer => {
@@ -5208,8 +5140,7 @@ class EmailService {
                     reviewPlatformId: reviewPlatform.id,
                     customerEmail: customer.email,
                     customerName: customer.name,
-                    orderNumber: customer.orderNumber, // Add this line
-                    status: 'SENT',
+                    status: 'SENT', // Keep uppercase for TypeScript
                     messageId: messageId,
                     userId: userId,
                     sendgridMessageId: messageId
@@ -5291,19 +5222,19 @@ class EmailService {
         try {
             // Use the actual userId passed from the route
             let userIdString = logData.userId ? logData.userId.toString() : '1';
-            console.log(`Saving email with userId: ${userIdString} and orderNumber: ${logData.orderNumber}`);
+            console.log(`Saving email with userId: ${userIdString}`);
             // Ensure we have a valid user in the database
             await this.ensureUserExists(userIdString);
             // Create a more descriptive subject line
             const subjectLine = `Review Request for ${logData.customerName}`;
             const contentDescription = `${logData.status} - Email ${logData.status.toLowerCase()} to ${logData.customerName} (${logData.customerEmail})`;
-            // Create email log record using direct SQL - UPDATED WITH orderNumber
+            // Create email log record using direct SQL
             await prisma_1.db.query(`
         INSERT INTO emails (
           "to", subject, content, status, "sentAt", 
-          "userId", "campaignId", "sendgridMessageId", "orderNumber", "createdAt", "updatedAt"
-        ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW()
+          "userId", "campaignId", "sendgridMessageId", "createdAt", "updatedAt"
+          ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW()
         )
       `, [
                 logData.customerEmail,
@@ -5313,8 +5244,7 @@ class EmailService {
                 logData.status === 'SENT' ? new Date() : null,
                 userIdString,
                 null, // campaign ID - will be null for now
-                logData.sendgridMessageId || logData.messageId,
-                logData.orderNumber || null // Add order number here
+                logData.sendgridMessageId || logData.messageId
             ]);
         }
         catch (error) {
