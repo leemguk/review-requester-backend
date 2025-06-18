@@ -104,50 +104,27 @@ router.post('/send',
         name: 'Default Review Request',
         platform: 'TRUSTPILOT',
         subject: `We'd love your feedback, {{customerName}}!`,
-        html: `<!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      </head>
-      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333333; margin: 0; padding: 20px; font-size: 14px;">
-
-        <div style="max-width: 600px; margin: 0 auto;">
-
+        html: `
           <p>Hello {{customerName}},</p>
-
-          <p>Thank you for your recent order from Ransom Spares. We hope everything arrived safely and meets your expectations.</p>
-
-          <p>We'd really value your feedback about your experience. It helps us improve our service and helps other customers too.</p>
-
-          <p>Would you mind taking a moment to share your thoughts on Trustpilot?</p>
-
-          <p>To leave your feedback, just <a href="{{trustpilotLink}}" style="color: #0066cc;">review us on Trustpilot</a>.</p>
-
+          <p>I hope this email finds you well. I'm reaching out to thank you for choosing us for your recent order, it really means a lot.</p>
+          <p>As a family-run business based in Somerset, we take great pride in providing fast, reliable, and personalised service to each of our customers. We believe in what we do and are always striving to improve and grow.</p>
+          <p>To help us spread the word and grow our customer base, we'd be incredibly grateful if you could leave us a review on Trustpilot. Your feedback will not only help us grow, but also allow others to see the level of service we provide.</p>
+          <p>To leave your feedback, just click the link below:</p>
+          <p><a href="{{trustpilotLink}}" target="_blank">{{trustpilotLink}}</a></p>
           <p>We truly appreciate your support and look forward to continuing to serve you in the future.</p>
-
           <p>Thank you again for your trust in us.</p>
-
-          <p>Best regards,<br/>
-          {{fromName}}<br/>
-          {{companyName}}<br/>
-          E: {{fromEmail}}</p>
-
-          <hr style="border: none; border-top: 1px solid #cccccc; margin: 30px 0;">
-
-          <div style="font-size: 11px; color: #666666; line-height: 1.4;">
-            <p>{{companyName}}<br/>
-            Supplier of spares and accessories for electric domestic appliances.</p>
-
-            <p>The information in this email and attachments is confidential and intended for the sole use of the addressee(s). Access, copying, disclosure or re-use, in any way, of the information contained in this email and attachments by anyone other than the addressee(s) are unauthorised. If you have received this email in error, please return it to the sender and highlight the error. We accept no legal liability for the content of the message. Any opinions or views presented are solely the responsibility of the author and do not necessarily represent those of {{companyName}}. We cannot guarantee that this message has not been modified in transit, and this message should not be viewed as contractually binding. Although we have taken reasonable steps to ensure that this email and attachments are free from any virus, we advise that in keeping with good computing practice the recipient should ensure they are actually virus free.</p>
-
-            <p>Without prejudice and subject to contract. Company Reg: 6779183. VAT Number: 948195871</p>
-          </div>
-
-        </div>
-
-      </body>
-      </html>`
+          <p>Best regards,</p>
+          <p>{{fromName}}<br/>
+          {{companyName}}</p>
+          <p><strong>E:</strong> <a href="mailto:{{fromEmail}}">{{fromEmail}}</a></p>
+          <hr/>
+          <small>
+            {{companyName}}<br/>
+            Supplier of spares and accessories for electric domestic appliances.<br/>
+            The information in this email and attachments is confidential and intended for the sole use of the addressee(s). Access, copying, disclosure or re-use, in any way, of the information contained in this email and attachments by anyone other than the addressee(s) are unauthorised. If you have received this email in error, please return it to the sender and highlight the error. We accept no legal liability for the content of the message. Any opinions or views presented are solely the responsibility of the author and do not necessarily represent those of {{companyName}}. We cannot guarantee that this message has not been modified in transit, and this message should not be viewed as contractually binding. Although we have taken reasonable steps to ensure that this email and attachments are free from any virus, we advise that in keeping with good computing practice the recipient should ensure they are actually virus free.<br/>
+            Without prejudice and subject to contract. Company Reg: 6779183. VAT Number: 948195871
+          </small>
+        `
       };
 
       const reviewPlatform = {
