@@ -30,7 +30,7 @@ This document contains all the code files in this project.
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.1",
     "node-fetch": "^3.3.2",
-    "pg": "^8.16.0",
+    "pg": "^8.16.2",
     "winston": "^3.11.0",
     "xlsx": "^0.18.5",
     "zod": "^3.22.4"
@@ -298,6 +298,319 @@ async function addOrderNumberColumn() {
 }
 
 addOrderNumberColumn();
+```
+
+## migrate-fixed.js
+```javascript
+const { Client } = require('pg');
+
+// Hardcode the Supabase connection to bypass environment variable issues
+const config = {
+  neon: {
+    connectionString: process.env.DATABASE_URL || process.env.NEON_DATABASE_URL
+  },
+  supabase: {
+    connectionString: 'postgresql://postgres.nhzsuvzjhmsjknqgtcep:7p5H3CDKBtrn4j@aws-0-eu-west-2.pooler.supabase.com:5432/postgres'
+  }
+};
+
+// Validate Neon connection
+if (!config.neon.connectionString) {
+  console.error('ERROR: Neon database URL not found in secrets!');
+  process.exit(1);
+}
+
+// Create clients
+const neonClient = new Client({ connectionString: config.neon.connectionString });
+const supabaseClient = new Client({ connectionString: config.supabase.connectionString });
+
+async function migrate() {
+  try {
+    // Connect to both databases
+    console.log('Connecting to databases...');
+    console.log('Using hardcoded Supabase URL');
+
+    await neonClient.connect();
+    console.log('✓ Connected to Neon database');
+
+    await supabaseClient.connect();
+    console.log('✓ Connected to Supabase database');
+
+    // Get all tables from Neon (excluding system tables)
+    const tablesQuery = `
+      SELECT tablename 
+      FROM pg_tables 
+      WHERE schemaname = 'public'
+      ORDER BY tablename;
+    `;
+
+    const { rows: tables } = await neonClient.query(tablesQuery);
+    console.log(`\nFound ${tables.length} tables to migrate:`, tables.map(t => t.tablename).join(', '));
+
+    // Process each table
+    for (const { tablename } of tables) {
+      console.log(`\n━━━ Processing table: ${tablename} ━━━`);
+
+      // Get table structure from Neon
+      const structureQuery = `
+        SELECT 
+          column_name,
+          data_type,
+          character_maximum_length,
+          is_nullable,
+          column_default,
+          udt_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' 
+          AND table_name = $1
+        ORDER BY ordinal_position;
+      `;
+
+      const { rows: columns } = await neonClient.query(structureQuery, [tablename]);
+      console.log(`Found ${columns.length} columns`);
+
+      // Store column info for later use
+      const columnInfo = {};
+      columns.forEach(col => {
+        columnInfo[col.column_name] = {
+          data_type: col.data_type,
+          udt_name: col.udt_name
+        };
+      });
+
+      // Build CREATE TABLE statement
+      let createTableSQL = `CREATE TABLE IF NOT EXISTS ${tablename} (\n`;
+      const columnDefinitions = [];
+
+      for (const col of columns) {
+        let colDef = `  "${col.column_name}" `;
+
+        // Map data types
+        if (col.data_type === 'character varying') {
+          colDef += `VARCHAR(${col.character_maximum_length || 255})`;
+        } else if (col.data_type === 'integer' && col.column_default && col.column_default.includes('nextval')) {
+          colDef += 'SERIAL';
+        } else if (col.data_type === 'bigint' && col.column_default && col.column_default.includes('nextval')) {
+          colDef += 'BIGSERIAL';
+        } else if (col.data_type === 'text') {
+          colDef += 'TEXT';
+        } else if (col.data_type === 'boolean') {
+          colDef += 'BOOLEAN';
+        } else if (col.data_type === 'timestamp with time zone') {
+          colDef += 'TIMESTAMPTZ';
+        } else if (col.data_type === 'timestamp without time zone') {
+          colDef += 'TIMESTAMP';
+        } else if (col.data_type === 'json') {
+          colDef += 'JSON';
+        } else if (col.data_type === 'jsonb') {
+          colDef += 'JSONB';
+        } else {
+          colDef += col.udt_name.toUpperCase();
+        }
+
+        // Add constraints
+        if (col.is_nullable === 'NO') {
+          colDef += ' NOT NULL';
+        }
+
+        // Handle defaults (but not for SERIAL)
+        if (col.column_default && !col.column_default.includes('nextval')) {
+          colDef += ` DEFAULT ${col.column_default}`;
+        }
+
+        columnDefinitions.push(colDef);
+      }
+
+      // Get primary key information
+      const pkQuery = `
+        SELECT column_name
+        FROM information_schema.key_column_usage
+        WHERE table_schema = 'public' 
+          AND table_name = $1
+          AND constraint_name LIKE '%_pkey';
+      `;
+
+      const { rows: pkColumns } = await neonClient.query(pkQuery, [tablename]);
+      if (pkColumns.length > 0) {
+        columnDefinitions.push(`  PRIMARY KEY (${pkColumns.map(pk => pk.column_name).join(', ')})`);
+      }
+
+      createTableSQL += columnDefinitions.join(',\n');
+      createTableSQL += '\n);';
+
+      // Create table in Supabase
+      console.log(`Creating table in Supabase...`);
+      try {
+        await supabaseClient.query(createTableSQL);
+        console.log(`✓ Table ${tablename} created successfully!`);
+      } catch (error) {
+        if (error.message.includes('already exists')) {
+          console.log(`⚠ Table ${tablename} already exists, skipping creation.`);
+        } else {
+          throw error;
+        }
+      }
+
+      // Copy data from Neon to Supabase
+      console.log(`Copying data from Neon to Supabase...`);
+
+      // First, clear any existing data in Supabase table
+      await supabaseClient.query(`TRUNCATE TABLE ${tablename} RESTART IDENTITY CASCADE;`);
+
+      // Get all data from Neon
+      const { rows: data } = await neonClient.query(`SELECT * FROM ${tablename}`);
+      console.log(`Found ${data.length} rows to copy`);
+
+      if (data.length > 0) {
+        // Debug first row
+        if (tablename === 'emails') {
+          console.log('First row sample:');
+          Object.entries(data[0]).slice(0, 5).forEach(([k, v]) => {
+            console.log(`  ${k}: ${typeof v} = ${v}`);
+          });
+        }
+
+        // Build INSERT statement with proper type handling
+        const columnNames = Object.keys(data[0]);
+        const quotedColumnNames = columnNames.map(col => `"${col}"`);
+
+        // Prepare the INSERT statement
+        let insertSQL = `INSERT INTO ${tablename} (${quotedColumnNames.join(', ')}) VALUES (`;
+
+        // Build placeholders with type conversions
+        const placeholders = columnNames.map((col, idx) => {
+          const colData = columnInfo[col];
+          if (!colData) return `$${idx + 1}`;
+
+          // Check if this is a timestamp column with integer data
+          if ((colData.data_type === 'timestamp without time zone' || 
+               colData.data_type === 'timestamp with time zone') &&
+              typeof data[0][col] === 'number') {
+            // Convert Unix timestamp to PostgreSQL timestamp
+            // Check if it's milliseconds or seconds
+            const sampleValue = data[0][col];
+            if (sampleValue > 9999999999) {
+              // Milliseconds
+              return `to_timestamp($${idx + 1}::bigint / 1000.0)`;
+            } else {
+              // Seconds
+              return `to_timestamp($${idx + 1}::bigint)`;
+            }
+          }
+
+          return `$${idx + 1}`;
+        });
+
+        insertSQL += placeholders.join(', ') + ')';
+
+        console.log('Using INSERT SQL:', insertSQL);
+
+        // Insert in batches for better performance
+        const batchSize = 100;
+        for (let i = 0; i < data.length; i += batchSize) {
+          const batch = data.slice(i, i + batchSize);
+
+          // Use a transaction for each batch
+          await supabaseClient.query('BEGIN');
+          try {
+            for (const row of batch) {
+              const values = columnNames.map(col => row[col]);
+              await supabaseClient.query(insertSQL, values);
+            }
+            await supabaseClient.query('COMMIT');
+            console.log(`✓ Copied rows ${i + 1}-${Math.min(i + batchSize, data.length)} of ${data.length}`);
+          } catch (error) {
+            await supabaseClient.query('ROLLBACK');
+            console.error(`Error in batch starting at row ${i + 1}:`, error.message);
+            // Log the problematic row for debugging
+            if (batch.length > 0) {
+              console.log('First row in failed batch:', batch[0]);
+            }
+            throw error;
+          }
+        }
+
+        // Update sequences for SERIAL columns
+        for (const col of columns) {
+          if (col.column_default && col.column_default.includes('nextval')) {
+            const sequenceName = `${tablename}_${col.column_name}_seq`;
+            try {
+              await supabaseClient.query(`
+                SELECT setval('${sequenceName}', (SELECT COALESCE(MAX("${col.column_name}"), 0) FROM ${tablename}));
+              `);
+              console.log(`✓ Updated sequence for ${col.column_name}`);
+            } catch (e) {
+              console.log(`⚠ Could not update sequence ${sequenceName}: ${e.message}`);
+            }
+          }
+        }
+      }
+    }
+
+    console.log('\n━━━ Migration completed successfully! ━━━');
+
+    // Verify data
+    console.log('\n━━━ Verification ━━━');
+    let allMatch = true;
+    for (const { tablename } of tables) {
+      const neonCount = await neonClient.query(`SELECT COUNT(*) FROM ${tablename}`);
+      const supabaseCount = await supabaseClient.query(`SELECT COUNT(*) FROM ${tablename}`);
+      const neonRows = neonCount.rows[0].count;
+      const supabaseRows = supabaseCount.rows[0].count;
+      const match = neonRows === supabaseRows ? '✓' : '✗';
+
+      console.log(`${match} ${tablename}: Neon=${neonRows}, Supabase=${supabaseRows}`);
+
+      if (neonRows !== supabaseRows) {
+        allMatch = false;
+      }
+    }
+
+    if (allMatch) {
+      console.log('\n✓ All tables migrated successfully with matching row counts!');
+      console.log('\nNext steps:');
+      console.log('1. Test your application with Supabase');
+      console.log('2. Update your app to use the Supabase connection');
+      console.log('3. Once verified, you can remove the Neon connection');
+    } else {
+      console.log('\n⚠ Warning: Some tables have mismatched row counts. Please investigate.');
+    }
+
+  } catch (error) {
+    console.error('❌ Migration failed:', error.message);
+    console.error('Full error:', error);
+  } finally {
+    // Close connections
+    await neonClient.end();
+    await supabaseClient.end();
+    console.log('\nDatabase connections closed.');
+  }
+}
+
+// Main execution
+async function main() {
+  console.log('Neon to Supabase Migration Script');
+  console.log('==================================\n');
+
+  console.log('Testing connections...');
+
+  // Quick connection test
+  try {
+    const testClient = new Client({ connectionString: config.supabase.connectionString });
+    await testClient.connect();
+    console.log('✓ Supabase connection successful');
+    await testClient.end();
+  } catch (error) {
+    console.error('✗ Supabase connection failed:', error.message);
+    process.exit(1);
+  }
+
+  console.log('\nStarting migration...\n');
+  await migrate();
+}
+
+// Run the script
+main();
 ```
 
 ## src/index.ts
@@ -1103,178 +1416,6 @@ router.post('/logout', (req: Request, res: Response) => {
   res.json({
     success: true,
     message: 'Logged out successfully'
-  });
-});
-
-export default router;
-```
-
-## src/routes/webhooks.ts
-```typescript
-// In src/routes/webhooks.ts - Replace with minimal logging version:
-
-import { Router, Request, Response } from 'express';
-import { logger } from '../utils/logger';
-import { db } from '../lib/prisma';
-
-const router = Router();
-
-// Track basic stats without spam
-let webhookStats = {
-  totalProcessed: 0,
-  totalSkipped: 0,
-  lastReset: new Date()
-};
-
-// POST /api/webhooks/sendgrid - Clean version with minimal logging
-router.post('/sendgrid', async (req: Request, res: Response) => {
-  try {
-    const events = Array.isArray(req.body) ? req.body : [req.body];
-    let processedCount = 0;
-    let skippedCount = 0;
-
-    for (const event of events) {
-      try {
-        const result = await processSendGridEvent(event);
-        if (result === 'processed') {
-          processedCount++;
-          webhookStats.totalProcessed++;
-        } else {
-          skippedCount++;
-          webhookStats.totalSkipped++;
-        }
-      } catch (error) {
-        // Silent error handling - only log actual errors
-        logger.error('Webhook event processing error:', error);
-      }
-    }
-
-    // Only log if we processed review app emails (skip e-commerce noise)
-    if (processedCount > 0) {
-      logger.info(`📧 Processed ${processedCount} review app events`);
-    }
-
-    res.status(200).json({ 
-      processed: processedCount,
-      skipped: skippedCount
-    });
-
-  } catch (error) {
-    logger.error('Webhook batch error:', error);
-    res.status(200).json({ error: 'Processing failed' });
-  }
-});
-
-// Clean event processing - no spam logging
-async function processSendGridEvent(event: any): Promise<'processed' | 'skipped'> {
-  try {
-    const customerEmail = event.email;
-    const eventType = event.event;
-    const timestamp = event.timestamp ? new Date(event.timestamp * 1000) : new Date();
-
-    if (!customerEmail || !eventType) {
-      return 'skipped';
-    }
-
-    // Check if email exists in our review app database
-    // Try to find by SendGrid message ID first (more accurate)
-    let emailResult;
-    if (event.sg_message_id) {
-      emailResult = await db.query(`
-        SELECT id, "userId", "to", status, "createdAt"
-        FROM emails 
-        WHERE "sendgridMessageId" = $1
-        LIMIT 1
-      `, [event.sg_message_id.split('.')[0]]); // SendGrid adds .filter after ID
-    }
-
-    // Fallback to email address if no message ID match
-    if (!emailResult || emailResult.rows.length === 0) {
-      emailResult = await db.query(`
-        SELECT id, "userId", "to", status, "createdAt"
-        FROM emails 
-        WHERE "to" = $1
-        ORDER BY "createdAt" DESC
-        LIMIT 1
-      `, [customerEmail]);
-    }
-
-    const emailRecord = emailResult.rows[0];
-
-    if (!emailRecord) {
-      return 'skipped'; // E-commerce email, skip silently
-    }
-
-    // Update email status
-    const success = await updateEmailStatus(emailRecord.id, eventType, timestamp, customerEmail);
-
-    // Only log important events, not every single one
-    if (success && ['open', 'click', 'bounce', 'spamreport'].includes(eventType)) {
-      logger.info(`📧 ${eventType.toUpperCase()}: ${customerEmail}`);
-    }
-
-    return 'processed';
-
-  } catch (error) {
-    throw error;
-  }
-}
-
-// Clean email status update - no verbose logging
-async function updateEmailStatus(
-  emailId: string, 
-  eventType: string, 
-  timestamp: Date,
-  customerEmail: string
-): Promise<boolean> {
-  try {
-    let updateQuery = '';
-    let updateParams: any[] = [];
-
-        switch (eventType) {
-          case 'delivered':
-            updateQuery = `UPDATE emails SET status = $1, "deliveredAt" = $3, "updatedAt" = NOW() WHERE id = $2`;
-            updateParams = ['delivered', emailId, timestamp];  // <-- Change 'DELIVERED' to 'delivered'
-            break;
-          case 'open':
-            updateQuery = `UPDATE emails SET status = $1, "openedAt" = $3, "openCount" = COALESCE("openCount", 0) + 1, "updatedAt" = NOW() WHERE id = $2`;
-            updateParams = ['opened', emailId, timestamp];  // <-- Change 'OPENED' to 'opened'
-            break;
-          case 'click':
-            updateQuery = `UPDATE emails SET status = $1, "clickedAt" = $3, "clickCount" = COALESCE("clickCount", 0) + 1, "updatedAt" = NOW() WHERE id = $2`;
-            updateParams = ['clicked', emailId, timestamp];  // <-- Change 'CLICKED' to 'clicked'
-            break;
-          case 'bounce':
-          case 'dropped':
-            updateQuery = `UPDATE emails SET status = $1, "bouncedAt" = $3, "updatedAt" = NOW() WHERE id = $2`;
-            updateParams = ['bounced', emailId, timestamp];  // <-- Change 'BOUNCED' to 'bounced'
-            break;
-          case 'spamreport':
-            updateQuery = `UPDATE emails SET status = $1, "spamAt" = $3, "updatedAt" = NOW() WHERE id = $2`;
-            updateParams = ['spam', emailId, timestamp];  // <-- Change 'SPAM' to 'spam'
-            break;
-      case 'processed':
-        return true; // Acknowledge silently
-      default:
-        return true; // Unknown events, ignore silently
-    }
-
-    const result = await db.query(updateQuery, updateParams);
-   return (result.rowCount || 0) > 0;
-
-  } catch (error) {
-    // Only log actual database errors
-    logger.error(`Database error for ${customerEmail}:`, error);
-    return false;
-  }
-}
-
-// Simple test endpoint
-router.get('/sendgrid/test', (req: Request, res: Response) => {
-  res.json({
-    message: 'Webhook working',
-    stats: webhookStats,
-    timestamp: new Date().toISOString()
   });
 });
 
@@ -2122,6 +2263,179 @@ router.post('/process',
 export default router;
 ```
 
+## src/routes/webhooks.ts
+```typescript
+// In src/routes/webhooks.ts - Replace with minimal logging version:
+
+import { Router, Request, Response } from 'express';
+import { logger } from '../utils/logger';
+import { db } from '../lib/prisma';
+
+const router = Router();
+
+// Track basic stats without spam
+let webhookStats = {
+  totalProcessed: 0,
+  totalSkipped: 0,
+  lastReset: new Date()
+};
+
+// POST /api/webhooks/sendgrid - Clean version with minimal logging
+router.post('/sendgrid', async (req: Request, res: Response) => {
+  try {
+    const events = Array.isArray(req.body) ? req.body : [req.body];
+    let processedCount = 0;
+    let skippedCount = 0;
+
+    for (const event of events) {
+      try {
+        const result = await processSendGridEvent(event);
+        if (result === 'processed') {
+          processedCount++;
+          webhookStats.totalProcessed++;
+        } else {
+          skippedCount++;
+          webhookStats.totalSkipped++;
+        }
+      } catch (error) {
+        // Silent error handling - only log actual errors
+        logger.error('Webhook event processing error:', error);
+      }
+    }
+
+    // Only log if we processed review app emails (skip e-commerce noise)
+    if (processedCount > 0) {
+      logger.info(`📧 Processed ${processedCount} review app events`);
+    }
+
+    res.status(200).json({ 
+      processed: processedCount,
+      skipped: skippedCount
+    });
+
+  } catch (error) {
+    logger.error('Webhook batch error:', error);
+    res.status(200).json({ error: 'Processing failed' });
+  }
+});
+
+// Clean event processing - no spam logging
+async function processSendGridEvent(event: any): Promise<'processed' | 'skipped'> {
+  try {
+    const customerEmail = event.email;
+    const eventType = event.event;
+    const timestamp = event.timestamp ? new Date(event.timestamp * 1000) : new Date();
+
+    if (!customerEmail || !eventType) {
+      return 'skipped';
+    }
+
+    // Check if email exists in our review app database
+    // Try to find by SendGrid message ID first (more accurate)
+    let emailResult;
+    if (event.sg_message_id) {
+      emailResult = await db.query(`
+        SELECT id, "userId", "to", status, "createdAt"
+        FROM emails 
+        WHERE "sendgridMessageId" = $1
+        LIMIT 1
+      `, [event.sg_message_id.split('.')[0]]); // SendGrid adds .filter after ID
+    }
+
+    // Fallback to email address if no message ID match
+    if (!emailResult || emailResult.rows.length === 0) {
+      emailResult = await db.query(`
+        SELECT id, "userId", "to", status, "createdAt"
+        FROM emails 
+        WHERE "to" = $1
+        ORDER BY "createdAt" DESC
+        LIMIT 1
+      `, [customerEmail]);
+    }
+
+    const emailRecord = emailResult.rows[0];
+
+    if (!emailRecord) {
+      return 'skipped'; // E-commerce email, skip silently
+    }
+
+    // Update email status
+    const success = await updateEmailStatus(emailRecord.id, eventType, timestamp, customerEmail);
+
+    // Only log important events, not every single one
+    if (success && ['open', 'click', 'bounce', 'spamreport'].includes(eventType)) {
+      logger.info(`📧 ${eventType.toUpperCase()}: ${customerEmail}`);
+    }
+
+    return 'processed';
+
+  } catch (error) {
+    throw error;
+  }
+}
+
+// Clean email status update - no verbose logging
+async function updateEmailStatus(
+  emailId: string, 
+  eventType: string, 
+  timestamp: Date,
+  customerEmail: string
+): Promise<boolean> {
+  try {
+    let updateQuery = '';
+    let updateParams: any[] = [];
+
+        switch (eventType) {
+          case 'delivered':
+            updateQuery = `UPDATE emails SET status = $1, "deliveredAt" = $3, "updatedAt" = NOW() WHERE id = $2`;
+            updateParams = ['delivered', emailId, timestamp];  // <-- Change 'DELIVERED' to 'delivered'
+            break;
+          case 'open':
+            updateQuery = `UPDATE emails SET status = $1, "openedAt" = $3, "openCount" = COALESCE("openCount", 0) + 1, "updatedAt" = NOW() WHERE id = $2`;
+            updateParams = ['opened', emailId, timestamp];  // <-- Change 'OPENED' to 'opened'
+            break;
+          case 'click':
+            updateQuery = `UPDATE emails SET status = $1, "clickedAt" = $3, "clickCount" = COALESCE("clickCount", 0) + 1, "updatedAt" = NOW() WHERE id = $2`;
+            updateParams = ['clicked', emailId, timestamp];  // <-- Change 'CLICKED' to 'clicked'
+            break;
+          case 'bounce':
+          case 'dropped':
+            updateQuery = `UPDATE emails SET status = $1, "bouncedAt" = $3, "updatedAt" = NOW() WHERE id = $2`;
+            updateParams = ['bounced', emailId, timestamp];  // <-- Change 'BOUNCED' to 'bounced'
+            break;
+          case 'spamreport':
+            updateQuery = `UPDATE emails SET status = $1, "spamAt" = $3, "updatedAt" = NOW() WHERE id = $2`;
+            updateParams = ['spam', emailId, timestamp];  // <-- Change 'SPAM' to 'spam'
+            break;
+      case 'processed':
+        return true; // Acknowledge silently
+      default:
+        return true; // Unknown events, ignore silently
+    }
+
+    const result = await db.query(updateQuery, updateParams);
+   return (result.rowCount || 0) > 0;
+
+  } catch (error) {
+    // Only log actual database errors
+    logger.error(`Database error for ${customerEmail}:`, error);
+    return false;
+  }
+}
+
+// Simple test endpoint
+router.get('/sendgrid/test', (req: Request, res: Response) => {
+  res.json({
+    message: 'Webhook working',
+    stats: webhookStats,
+    timestamp: new Date().toISOString()
+  });
+});
+
+export default router;
+
+```
+
 ## src/routes/email.ts
 ```typescript
 // src/routes/email.ts - UPDATED VERSION WITH DATABASE EMAIL SETTINGS
@@ -2230,50 +2544,27 @@ router.post('/send',
         name: 'Default Review Request',
         platform: 'TRUSTPILOT',
         subject: `We'd love your feedback, {{customerName}}!`,
-        html: `<!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      </head>
-      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333333; margin: 0; padding: 20px; font-size: 14px;">
-
-        <div style="max-width: 600px; margin: 0 auto;">
-
+        html: `
           <p>Hello {{customerName}},</p>
-
-          <p>Thank you for your recent order from Ransom Spares. We hope everything arrived safely and meets your expectations.</p>
-
-          <p>We'd really value your feedback about your experience. It helps us improve our service and helps other customers too.</p>
-
-          <p>Would you mind taking a moment to share your thoughts on Trustpilot?</p>
-
-          <p>To leave your feedback, just <a href="{{trustpilotLink}}" style="color: #0066cc;">review us on Trustpilot</a>.</p>
-
+          <p>I hope this email finds you well. I'm reaching out to thank you for choosing us for your recent order, it really means a lot.</p>
+          <p>As a family-run business based in Somerset, we take great pride in providing fast, reliable, and personalised service to each of our customers. We believe in what we do and are always striving to improve and grow.</p>
+          <p>To help us spread the word and grow our customer base, we'd be incredibly grateful if you could leave us a review on Trustpilot. Your feedback will not only help us grow, but also allow others to see the level of service we provide.</p>
+          <p>To leave your feedback, just click the link below:</p>
+          <p><a href="{{trustpilotLink}}" target="_blank">{{trustpilotLink}}</a></p>
           <p>We truly appreciate your support and look forward to continuing to serve you in the future.</p>
-
           <p>Thank you again for your trust in us.</p>
-
-          <p>Best regards,<br/>
-          {{fromName}}<br/>
-          {{companyName}}<br/>
-          E: {{fromEmail}}</p>
-
-          <hr style="border: none; border-top: 1px solid #cccccc; margin: 30px 0;">
-
-          <div style="font-size: 11px; color: #666666; line-height: 1.4;">
-            <p>{{companyName}}<br/>
-            Supplier of spares and accessories for electric domestic appliances.</p>
-
-            <p>The information in this email and attachments is confidential and intended for the sole use of the addressee(s). Access, copying, disclosure or re-use, in any way, of the information contained in this email and attachments by anyone other than the addressee(s) are unauthorised. If you have received this email in error, please return it to the sender and highlight the error. We accept no legal liability for the content of the message. Any opinions or views presented are solely the responsibility of the author and do not necessarily represent those of {{companyName}}. We cannot guarantee that this message has not been modified in transit, and this message should not be viewed as contractually binding. Although we have taken reasonable steps to ensure that this email and attachments are free from any virus, we advise that in keeping with good computing practice the recipient should ensure they are actually virus free.</p>
-
-            <p>Without prejudice and subject to contract. Company Reg: 6779183. VAT Number: 948195871</p>
-          </div>
-
-        </div>
-
-      </body>
-      </html>`
+          <p>Best regards,</p>
+          <p>{{fromName}}<br/>
+          {{companyName}}</p>
+          <p><strong>E:</strong> <a href="mailto:{{fromEmail}}">{{fromEmail}}</a></p>
+          <hr/>
+          <small>
+            {{companyName}}<br/>
+            Supplier of spares and accessories for electric domestic appliances.<br/>
+            The information in this email and attachments is confidential and intended for the sole use of the addressee(s). Access, copying, disclosure or re-use, in any way, of the information contained in this email and attachments by anyone other than the addressee(s) are unauthorised. If you have received this email in error, please return it to the sender and highlight the error. We accept no legal liability for the content of the message. Any opinions or views presented are solely the responsibility of the author and do not necessarily represent those of {{companyName}}. We cannot guarantee that this message has not been modified in transit, and this message should not be viewed as contractually binding. Although we have taken reasonable steps to ensure that this email and attachments are free from any virus, we advise that in keeping with good computing practice the recipient should ensure they are actually virus free.<br/>
+            Without prejudice and subject to contract. Company Reg: 6779183. VAT Number: 948195871
+          </small>
+        `
       };
 
       const reviewPlatform = {
@@ -3799,7 +4090,7 @@ router.post('/send', auth_1.authenticateToken, (0, validation_1.validateRequest)
         // For now, we'll use mock data but with the user's actual email settings
         const company = {
             id: 1,
-            name: 'Ransom Spares.co.uk Ltd',
+            name: 'Ransom Spares',
             trustpilotUrl: 'https://uk.trustpilot.com/evaluate/ransomspares.co.uk',
             fromEmail: userEmailSettings.fromEmail,
             fromName: userEmailSettings.displayName // Use the user's display name from database
@@ -3823,11 +4114,11 @@ router.post('/send', auth_1.authenticateToken, (0, validation_1.validateRequest)
 
           <p>Hello {{customerName}},</p>
 
-          <p>I hope this email finds you well. I'm reaching out to thank you for choosing us for your recent order, it really means a lot.</p>
+          <p>Thank you for your recent order from Ransom Spares. We hope everything arrived safely and meets your expectations.</p>
 
-          <p>As a family-run business based in Somerset, we take great pride in providing fast, reliable, and personalised service to each of our customers. We believe in what we do and are always striving to improve and grow.</p>
+          <p>We'd really value your feedback about your experience. It helps us improve our service and helps other customers too.</p>
 
-          <p>To help us spread the word and grow our customer base, we'd be incredibly grateful if you could leave us a review on Trustpilot. Your feedback will not only help us grow, but also allow others to see the level of service we provide.</p>
+          <p>Would you mind taking a moment to share your thoughts on Trustpilot?</p>
 
           <p>To leave your feedback, just <a href="{{trustpilotLink}}" style="color: #0066cc;">review us on Trustpilot</a>.</p>
 
@@ -5160,13 +5451,22 @@ class EmailService {
                     to: customer.email,
                     from: {
                         email: company.fromEmail,
-                        name: company.fromName // Use the display name from user settings
+                        name: company.fromName
                     },
                     subject: personalizedTemplate.subject,
                     html: personalizedTemplate.html,
+                    asm: {
+                        groupId: 27196,
+                        groupsToDisplay: [27196]
+                    },
                     trackingSettings: {
                         clickTracking: { enable: true, enableText: false },
-                        openTracking: { enable: true }
+                        openTracking: { enable: true },
+                        subscriptionTracking: {
+                            enable: true,
+                            text: 'Unsubscribe from review requests',
+                            html: '<p style="text-align: center; font-size: 11px; color: #666; margin-top: 20px;">Don\'t want to receive review request emails? <a href="<%asm_group_unsubscribe_raw_url%>" style="color: #666; text-decoration: underline;">Unsubscribe here</a></p>'
+                        }
                     },
                     // Categories and custom args for webhook filtering
                     categories: ['review_request', reviewPlatform.platform.toLowerCase()],
