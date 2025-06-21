@@ -130,7 +130,22 @@ const isSameDayDespatch = (orderDateStr: string | Date, despatchDateStr: string 
 
       const nextDayDespatch = nextWorkingDay.getTime() === despatchDay.getTime();
 
-      // Allow same day OR next working day
+      // ADDITION: For weekend orders, also check if dispatched before Monday 3pm
+      if (orderDay.getDay() === 0 || orderDay.getDay() === 6) {
+        // Find Monday 3pm
+        const monday = new Date(orderDay);
+        while (monday.getDay() !== 1) {
+          monday.setDate(monday.getDate() + 1);
+        }
+        monday.setHours(15, 0, 0, 0);
+
+        // If dispatched before Monday 3pm, it's valid
+        if (despatchDate.getTime() <= monday.getTime()) {
+          return true;
+        }
+      }
+
+      // Allow same day OR next working day (original logic preserved)
       return sameDayDespatch || nextDayDespatch;
     }
 
@@ -310,7 +325,7 @@ const processOrderData = (
 
     // Business Rule 4: Skip if not same-day despatch
     if (!isSameDayDespatch(orderDate, despatchDate)) {
-      customer.skipReason = 'Not same-day despatch (orders before 3pm must despatch same day, orders after 3pm can despatch next working day)';
+      customer.skipReason = 'Not same-day despatch (orders before 3pm must despatch same day, weekday orders after 3pm can despatch next working day, weekend orders must despatch by Monday 3pm)';
       skipped.push(customer);
       continue;
     }
