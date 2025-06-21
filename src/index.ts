@@ -29,7 +29,7 @@ app.use(helmet({
 }));
 
 app.use(cors({
-  origin: ['http://localhost:3000', 'https://nextjs-boilerplate-psi-umber-87.vercel.app'],
+  origin: true,
   credentials: true
 }));
 
@@ -151,7 +151,7 @@ app.use('*', (req, res) => {
 
 // Start server
 const PORT = config.port;
-app.listen(PORT, () => {
+  app.listen(PORT, '0.0.0.0', () => {
   logger.info(`🚀 Server running on port ${PORT}`);
   logger.info(`📧 SendGrid configured: ${!!config.sendgrid.apiKey}`);
   logger.info(`🪝 Webhooks endpoint: /api/webhooks/sendgrid`);
