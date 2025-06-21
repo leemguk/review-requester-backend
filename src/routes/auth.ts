@@ -14,6 +14,7 @@ function isAllowedEmail(email: string): boolean {
   const domain = email.toLowerCase().split('@')[1];
   return ALLOWED_DOMAINS.includes(domain);
 }
+
 // Validation schemas
 const registerSchema = z.object({
   body: z.object({
@@ -45,15 +46,6 @@ router.post('/register',
           error: 'Registration is currently private'
         });
       }
-
-      // TODO: Check if user already exists in database
-      // const existingUser = await db.user.findUnique({ where: { email } });
-      // if (existingUser) {
-      //   return res.status(400).json({
-      //     success: false,
-      //     error: 'User with this email already exists'
-      //   });
-      // }
 
       // Hash password
       const saltRounds = 12;
@@ -112,11 +104,6 @@ router.post('/login',
   async (req: Request, res: Response) => {
     try {
       const { email, password } = req.body;
-
-      // TODO: Get user from database
-      // const user = await db.user.findUnique({ 
-      //   where: { email: email.toLowerCase() } 
-      // });
 
       // Get user from database
       const userResult = await db.query(
@@ -187,11 +174,9 @@ router.post('/login',
 
 // POST /api/auth/logout
 router.post('/logout', (req: Request, res: Response) => {
-  // TODO: Invalidate token in database/Redis
   res.json({
     success: true,
     message: 'Logged out successfully'
   });
 });
-
 export default router;
