@@ -111,9 +111,25 @@ const isSameDayDespatch = (orderDateStr: string | Date, despatchDateStr: string 
     const orderHour = orderDate.getHours();
 
     // Rule: Orders before 3pm (15:00) must despatch same day
-    if (orderHour < 15) {
-      return orderDay.getTime() === despatchDay.getTime();
-    } 
+if (orderHour < 15) {
+  // EXCEPTION: Sunday orders before 3pm can also dispatch by Monday 3pm
+  if (orderDay.getDay() === 0) { // Sunday
+    const sameDayDespatch = orderDay.getTime() === despatchDay.getTime();
+    
+    // Find Monday 3pm
+    const monday = new Date(orderDay);
+    while (monday.getDay() !== 1) {
+      monday.setDate(monday.getDate() + 1);
+    }
+    monday.setHours(15, 0, 0, 0);
+    
+    // Sunday orders before 3pm can dispatch same day OR by Monday 3pm
+    return sameDayDespatch || despatchDate.getTime() <= monday.getTime();
+  }
+  
+  // All other days: before 3pm must dispatch same day
+  return orderDay.getTime() === despatchDay.getTime();
+}
     // Rule: Orders at/after 3pm can despatch same day OR next working day
     else {
       // Check if it's same day despatch
