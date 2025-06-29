@@ -73,7 +73,6 @@ interface ProcessedData {
   };
 }
 
-// FIXED: Same-day despatch validation with proper typing
 // FIXED: Same-day despatch validation with proper UK date parsing
 const isSameDayDespatch = (orderDateStr: string | Date, despatchDateStr: string | Date): boolean => {
   if (!orderDateStr || !despatchDateStr) {
