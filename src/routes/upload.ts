@@ -74,6 +74,7 @@ interface ProcessedData {
 }
 
 // FIXED: Same-day despatch validation with proper typing
+// FIXED: Same-day despatch validation with proper UK date parsing
 const isSameDayDespatch = (orderDateStr: string | Date, despatchDateStr: string | Date): boolean => {
   if (!orderDateStr || !despatchDateStr) {
     return false;
@@ -83,23 +84,38 @@ const isSameDayDespatch = (orderDateStr: string | Date, despatchDateStr: string 
     let orderDate: Date;
     let despatchDate: Date;
 
-    // Handle different input types
-    if (orderDateStr instanceof Date) {
-      orderDate = orderDateStr;
-    } else {
-      // Convert string to Date
-      orderDate = new Date(orderDateStr);
-    }
+    // Helper function to parse UK date format (dd/mm/yyyy hh:mm:ss)
+    const parseUKDate = (dateInput: string | Date): Date => {
+      if (dateInput instanceof Date) {
+        return dateInput;
+      }
 
-    if (despatchDateStr instanceof Date) {
-      despatchDate = despatchDateStr;
-    } else {
-      // Convert string to Date
-      despatchDate = new Date(despatchDateStr);
-    }
+      const dateStr = dateInput.toString().trim();
+
+      // Handle UK format: dd/mm/yyyy hh:mm:ss
+      if (dateStr.includes('/')) {
+        const [datePart, timePart] = dateStr.split(' ');
+        const [day, month, year] = datePart.split('/');
+
+        // Convert to US format for JavaScript Date constructor
+        const usFormat = `${month}/${day}/${year}${timePart ? ' ' + timePart : ''}`;
+        return new Date(usFormat);
+      }
+
+      // Fallback to direct parsing
+      return new Date(dateInput);
+    };
+
+    orderDate = parseUKDate(orderDateStr);
+    despatchDate = parseUKDate(despatchDateStr);
 
     if (isNaN(orderDate.getTime()) || isNaN(despatchDate.getTime())) {
-      console.error('Invalid dates:', { orderDateStr, despatchDateStr });
+      console.error('Invalid dates after parsing:', { 
+        orderDateStr, 
+        despatchDateStr, 
+        parsedOrder: orderDate, 
+        parsedDespatch: despatchDate 
+      });
       return false;
     }
 
@@ -109,31 +125,58 @@ const isSameDayDespatch = (orderDateStr: string | Date, despatchDateStr: string 
 
     // Get the order hour for 3pm cutoff logic
     const orderHour = orderDate.getHours();
+    const orderDayOfWeek = orderDay.getDay(); // 0=Sunday, 1=Monday, ..., 6=Saturday
+
+    // Debug logging
+    console.log(`Order: ${orderDateStr} → ${orderDate.toISOString()} (${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][orderDayOfWeek]} ${orderHour}:00)`);
+    console.log(`Despatch: ${despatchDateStr} → ${despatchDate.toISOString()}`);
+
+    // WEEKEND ORDERS (Saturday=6 or Sunday=0)
+    if (orderDayOfWeek === 0 || orderDayOfWeek === 6) {
+      console.log('🔄 Weekend order detected - must despatch by Monday 3pm');
+
+      // Find Monday 3pm from the order date
+      const monday = new Date(orderDay);
+
+      // Calculate days to add to get to Monday
+      if (orderDayOfWeek === 0) { // Sunday
+        monday.setDate(monday.getDate() + 1); // Monday is next day
+      } else { // Saturday
+        monday.setDate(monday.getDate() + 2); // Monday is in 2 days
+      }
+
+      monday.setHours(15, 0, 0, 0); // Set to 3:00 PM
+
+      const isValid = despatchDate.getTime() <= monday.getTime();
+      console.log(`Monday 3pm deadline: ${monday.toISOString()}`);
+      console.log(`Despatch: ${despatchDate.toISOString()}`);
+      console.log(`Valid? ${isValid ? '✅' : '❌'}`);
+
+      return isValid;
+    }
+
+    // WEEKDAY ORDERS (Monday-Friday)
+    console.log('🔄 Weekday order');
 
     // Rule: Orders before 3pm (15:00) must despatch same day
-if (orderHour < 15) {
-  // EXCEPTION: Sunday orders before 3pm can also dispatch by Monday 3pm
-  if (orderDay.getDay() === 0) { // Sunday
-    const sameDayDespatch = orderDay.getTime() === despatchDay.getTime();
-    
-    // Find Monday 3pm
-    const monday = new Date(orderDay);
-    while (monday.getDay() !== 1) {
-      monday.setDate(monday.getDate() + 1);
+    if (orderHour < 15) {
+      console.log('⏰ Before 3pm - must despatch same day');
+      const isValid = orderDay.getTime() === despatchDay.getTime();
+      console.log(`Same day despatch? ${isValid ? '✅' : '❌'}`);
+      return isValid;
     }
-    monday.setHours(15, 0, 0, 0);
-    
-    // Sunday orders before 3pm can dispatch same day OR by Monday 3pm
-    return sameDayDespatch || despatchDate.getTime() <= monday.getTime();
-  }
-  
-  // All other days: before 3pm must dispatch same day
-  return orderDay.getTime() === despatchDay.getTime();
-}
+
     // Rule: Orders at/after 3pm can despatch same day OR next working day
     else {
+      console.log('⏰ After 3pm - can despatch same day or next working day');
+
       // Check if it's same day despatch
       const sameDayDespatch = orderDay.getTime() === despatchDay.getTime();
+
+      if (sameDayDespatch) {
+        console.log('✅ Same day despatch');
+        return true;
+      }
 
       // Calculate next working day from order date
       const nextWorkingDay = new Date(orderDay);
@@ -145,24 +188,9 @@ if (orderHour < 15) {
       }
 
       const nextDayDespatch = nextWorkingDay.getTime() === despatchDay.getTime();
+      console.log(`Next working day despatch? ${nextDayDespatch ? '✅' : '❌'}`);
 
-      // ADDITION: For weekend orders, also check if dispatched before Monday 3pm
-      if (orderDay.getDay() === 0 || orderDay.getDay() === 6) {
-        // Find Monday 3pm
-        const monday = new Date(orderDay);
-        while (monday.getDay() !== 1) {
-          monday.setDate(monday.getDate() + 1);
-        }
-        monday.setHours(15, 0, 0, 0);
-
-        // If dispatched before Monday 3pm, it's valid
-        if (despatchDate.getTime() <= monday.getTime()) {
-          return true;
-        }
-      }
-
-      // Allow same day OR next working day (original logic preserved)
-      return sameDayDespatch || nextDayDespatch;
+      return nextDayDespatch;
     }
 
   } catch (error) {
